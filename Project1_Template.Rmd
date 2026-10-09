@@ -1,0 +1,42 @@
+---
+author: "Your Names (both first and last names)"
+title: "Your descriptive title"
+date: "yyyy-mm-dd"
+output:
+  pdf_document:
+    number_sections: true
+---
+```{r echo=FALSE, include=FALSE, message=FALSE}
+# all library load statements here
+
+r.version <- "4.3.2"
+seed.val <- 123456
+```
+
+Notes: This is an Rmd file template for the project. You may edit the headings below as fits your analysis. You may add headings and sub-headings as well. Please read the requirements for project 1 milestone 1 and for the final submission.
+
+For the Overview: A brief intro to the domain to give context and your main question go in this space. You don't need a heading for the overview (unless you want one).
+
+# Data Description and Processing
+
+
+# Data Exploration
+
+
+# Modeling 
+
+
+## Hypothesis
+
+
+## Model 1:
+
+
+## Model 2: 
+
+
+# Predicting with Models 1 and 2
+
+
+# Summary and Conclusions
+

@@ -1,0 +1,414 @@
+---
+author: "Gordon Anderson"
+title: "The Effects of Academic and Non-academic Factors on Academic Performance."
+date: "2025-01-22"
+output:
+  pdf_document:
+    number_sections: true
+---
+```{r echo=FALSE, include=FALSE, message=FALSE}
+library(caret) # for training and cross validation
+library(knitr) # for kable table rendering
+library (tidyverse) # tibble
+library(ggplot2) # plotting
+library(car) # for VIF
+# two libraries for applying robust std errors:
+library(lmtest) # for Breusch-Pagan test
+library(sandwich)
+library(modelsummary)
+
+# params for random generator
+r.version <- "4.3.2"
+seed.val <- 1234
+```
+
+There are many types of activities that students engage in during their time at college. There are academic activities such as studying for and taking exams, as well as non-academic activities such as extracurricular activities and sleep time. Knowing how these factors affect academic performance is of major interest to post-secondary institutions as they strive to implement policies to support their students' academic success.
+ 
+The main research question of this analysis is how do academic and non-academic factors contribute to a student's academic performance in post-secondary institutions?
+
+# Data Description and Processing
+
+The data set used in this analysis was based on a modified data set from kaggle[1]. We categorized the variables in the data set as academic and non-academic: \
+
+Non-Academic Variables: \
+extracurricular: Whether the student participates in extracurricular activities. categorical: Yes or No. 
+sleep_hrs: The average number of hours of sleep the student had per day. numeric \
+\par
+Academic Variables:\
+study_hrs: The total number of hours spent studying by a student. numeric \
+prior_score: The scores obtained by students in previous tests. numeric \
+practice: The number of sample question papers the student practiced. numeric \
+\par
+Outcome:\
+performance_index: A measure of the overall performance of each student. The performance index represents the student's academic performance over one year and has been rounded to the nearest integer. The index ranges from 10 to 100, with higher values indicating better performance.  numeric \
+
+The data set was checked for missing values. Of the original 9,986 observations, we removed 7 observations that contained missing values leaving 9,979 complete observations.
+
+We used the performance index as an outcome.
+
+```{r echo=FALSE, include=FALSE}
+data.df <- read.csv("academic_performance.csv")
+data.df <- na.omit(data.df)
+data.df$extracurricular <- factor(data.df$extracurricular)
+```
+
+# Data Exploration
+
+In figure 1, the distribution of the outcome variable, performance index, shows a symmetrical shape with a "plateau" between the 2nd (25%) and 4th (75%) quantiles. 
+
+```{r echo=FALSE, out.width="70%", out.height="35%", fig.align = 'center', fig.cap="Academic performance index distribution."}
+hist(data.df$performance_index, freq = FALSE, # freq = FALSE for density scale on y-axis
+     main = "", # turn off the title as using the fig.cap
+     xlab = "Index Value",
+     ylab = "Density")
+lines(density(data.df$performance_index), col = "blue", lwd = 2)
+```
+
+We added the 2nd and 4th quantile to the descriptive statistics in table 1 to describe the plateau. This means that about 50% of the performance index scores are close to 55, the mean and median of the distribution.
+
+```{r echo=FALSE}
+# table of descriptive stats for the performance index scores
+statistic <- c("Min", "2nd Quant. (25%)", "Mean","Median", "4th Quant. (75%)", "Max", "StdDev")
+data<-data.df$performance_index
+quantiles<-quantile(data)
+# extracting the number with as.numeric because quantiles[2] is a named number.
+second.quant<-as.numeric(quantiles[2])
+fourth.quant<-as.numeric(quantiles[4])
+mn<-min(data)
+mx<-max(data)
+avg<-round(mean(data), 2)
+md<-median(data)
+std<-round(sd(data), 2)
+value <- c(mn,second.quant,avg,md,fourth.quant,mx,std)
+st.tbl <- cbind(statistic, value)
+kable(st.tbl, caption="Performance index descriptive statistics")
+```
+
+While this distribution is not strictly normal, we don't consider this a problem for linear regression modeling as the data size is relatively large (>>50), and the shape is not extremely right or left skewed. Perhaps of more importance is the fact that the outcome is bounded by numbers between 10 and 100 inclusive. This can have effects on linear regression models fitting either end of a bounded outcome. Given these observations, we checked the residuals carefully for problems in our fitted models.
+
+## Non-Academic Variables
+
+The two non-academic variables of interest were participation in extracurricular activities and sleep hours. We explored the distributions of these variables.
+
+We checked the frequencies of participation in extracurricular activities a this is a key variable in the non-academic category of predictors.
+
+```{r echo=FALSE}
+# how many students participated in extracurricular activities?
+label <- c("Yes", "No")
+yes.df<-data.df[data.df$extracurricular == "Yes",] 
+no.df<-data.df[data.df$extracurricular == "No",] 
+count <- c(nrow(yes.df),nrow(no.df))
+imb.tbl <- cbind(label, count)
+kable(imb.tbl, col.names = c("Participated", "Count"), caption="Participated in extracurricular activities.")
+```
+
+Table 2 above shows that there is essentially an even number of students who participated in extracurricular activities and those who did not. This means we have a good representation of each level.
+
+The distribution of sleep hours is also of interest. Sleep hours is measured in whole hours, so it is recorded as integer values. 
+
+```{r echo=FALSE, out.width="65%", out.height="25%", fig.align = 'center', fig.cap="Distribution of sleep hours."}
+# plotof sleep hours
+sh.tbl<-table(data.df$sleep_hrs)
+sh.df<- data.frame(
+hours<- factor(names(sh.tbl)),
+counts<- as.numeric(sh.tbl) )
+# pass the data frame to the ggplot function:
+ggplot(sh.df, aes(x = hours, y = counts)) +
+  geom_col(fill = "darkgrey") +
+  geom_text(aes(label = counts), vjust = -0.5, size = 3)
+```
+
+Figure 2 show a very even number of students cross the range of hours from 4 to 9.
+
+## Academic Variables
+
+We explored the distributions of the three academic-based variables.
+
+```{r echo=FALSE, out.width="60%", out.height="25%", fig.align = 'center', fig.cap="Distribution of prior scores."}
+hist(data.df$prior_score, freq = FALSE, # freq = FALSE for density scale on y-axis
+     main = "", # turn off the title as using the fig.cap
+     xlab = "Scores (0-100)",
+     ylab = "Density")
+lines(density(data.df$prior_score), col = "blue", lwd = 2)
+```
+
+Table 3 and figure 3 show that prior scores are bounded by 11 and 100 inclusive, with a very even distribution across all scores in the data.
+
+\newpage
+
+```{r echo=FALSE}
+# table of descriptive stats for the performance index scores
+statistic <- c("Min", "Mean","Median", "Max", "StdDev")
+data<-data.df$performance_index
+mn<-min(data)
+mx<-max(data)
+avg<-round(mean(data), 2)
+md<-median(data)
+std<-round(sd(data), 2)
+value <- c(mn,avg,md,mx,std)
+st.tbl <- cbind(statistic, value)
+kable(st.tbl, caption="Prior score descriptive Statistics")
+```
+
+In figure 4 below, we plotted the number of students for each number of study hours.
+
+```{r echo=FALSE, out.width="65%", out.height="25%", fig.align = 'center', fig.cap="Distribution of study hours."}
+
+# extract the carrier names and counts from the table object and create a data frame:
+stdyh.tbl<-table(data.df$study_hrs)
+stdyh.df<- data.frame(
+hrs<- factor(names(stdyh.tbl)),
+counts<- as.numeric(stdyh.tbl) )
+# pass the data frame to the ggplot function:
+ggplot(stdyh.df, aes(x = hrs, y = counts)) +
+  geom_col(fill = "darkgrey") +
+  geom_text(aes(label = counts), vjust = -0.5, size = 3)
+```
+
+Figure 4 shows that study hours are recorded by integers 1 through 9, with an very even number (count) for each number of hours.
+
+```{r echo=FALSE, out.width="65%", out.height="25%", fig.align = 'center', fig.cap="Distribution of the number of sample question papers practiced."}
+
+# extract the carrier names and counts from the table object and create a data frame:
+prac.tbl<-table(data.df$practice)
+prac.df<- data.frame(
+papers<- factor(names(prac.tbl)),
+counts<- as.numeric(prac.tbl) )
+# pass the data frame to the ggplot function:
+ggplot(prac.df, aes(x = papers, y = counts)) +
+  geom_col(fill = "darkgrey") +
+  geom_text(aes(label = counts), vjust = -0.5, size = 3)
+
+```
+
+Figure 5 show that the number of practice papers studied are bounded by 0 to 9 inclusive, with a very even distribution of counts over all numbers of papers.
+
+# Modeling 
+
+We fitted two linear regression models to the data to investigate how academic and non-academic factors contribute to a student's academic performance. The first model included all five predictors and the second model included only the three academic predictors.
+
+## Hypothesis
+
+We made the following two hypotheses:\
+1. Academic predictors will have a greater effect on academic performance than non-academic predictors. \
+2. Prior scores will have the greatest effect on academic performance. \
+
+In hypothesis 1, we reason that academic activities are more closely related to academic performance, and therefore will have a greater effect on academic performance.
+
+In hypothesis 2, although study time and practice are likely to have a positive effect on performance, past achievement is likely to be more predictive of current performance on average.
+
+## Model 1
+
+We fitted a linear regression model using the five predictors: study_hrs, prior_score, practice, extracurricular, sleep_hrs, with performance_index as the predicted variable. The estimates for the coefficients, standard errors and significance results are displayed below:
+
+```{r echo=FALSE}
+fit1 <- lm (performance_index ~ ., data=data.df)
+# summary object useful for values from fit.
+fit1.summary<-summary(fit1)
+coef.vals <- coef(fit1.summary)
+kable(coef.vals, caption="Summary of coefficients for model 1.")
+```
+
+```{r echo=FALSE, results ='asis'}
+adjrsq <- fit1.summary$adj.r.squared[1]
+# round the R-squared value and concatenate into an explanatory string to be printed in the pdf.
+formatted.str <- sprintf("The adjusted R-squared for this model was %.4f, which suggests the model is explaining approximately 88%% of the variance in the data.", adjrsq)
+cat(formatted.str)
+```
+
+All predictors in the model are statistically significant with p-values < 0.05. Table X summarizes the importance, as determined by magnitude of the significant coefficients of the predictors, not the standard error.
+
+```{r echo=FALSE}
+# create table of predictor importance for model 1
+names <- c("Rank", "Predictor", "Category", "Coefficient")
+rank.num<-c(seq(1:5))
+pred.names<-rownames(coef.vals)[2:6]
+cats<-c("academic", "academic", "non-academic", "non-academic", "academic")
+coeffs<-round(as.numeric(coef.vals[2:6,1]),4)
+
+pred.imp.tbl<-tibble(rank.num,pred.names,cats,coeffs)
+knitr::kable(pred.imp.tbl, col.names=names, caption="Ranking of predictors' importance in model 1.")
+```
+
+The amount of study hours has the largest effect on academic performance, with one additional hour of study associated with a 2.75 point increase in the performance metric on average (and holding all other values constant). The second most important predictor was the prior score (min 11, max 100), where a one point increase in score is associated with almost a 1 point increase in the performance index. The third academic predictor was the number of sample question papers the student practiced. This predictor had the lowest effect of any in the model. The non-academic predictors came in 3rd and 4th in terms of their effect on performance. Hypothesis 1 was not fully supported by the model; however, the two most effective predictors were academic. Hypothesis 2 was not supported as time spent on study out performed prior score.
+
+Among non-academic predictors, those that engaged in extracurricular activity performed about 0.6 of a point better on average than those who did not. Sleep hours also had positive but a slightly smaller effect on performance. While the non-academic predictors are not the most important (by our measure) predictors in the model, they are significant and have an effect on the outcome.
+
+### Evaluation of Model 1 Fit
+
+We calculated variable inflation factor, VIF, to check for multicollinearity in the predictors.
+
+```{r echo=FALSE}
+vif.res <- vif(fit1)
+kable(vif.res, col.names=c('Predictor','VIF'), caption="VIF calculations for model 1.")
+```
+
+The results show all predictors with a small VIF score and we have no multicollinearity present.
+
+The fit residuals as shown in figure X show that almost all of the residuals are evenly clustered above and below the zero line. There is a pattern of points that show changing variance as the fitted values change, suggesting possible heteroskedasticity among the predictors. Another likely issue is that the values of the outcome variable, performance_index, are in bounded by 10 and 100. We notice that the residuals skew negative near the high fitted values which could be ceiling effect. 
+
+```{r echo=FALSE, out.width="80%", out.height="35%", fig.align = 'center', fig.cap="Plot of of residuals vs. fitted values and Q-Q plot for model 1."}
+
+par(mfrow = c(1,2))
+# residuals vs fitted
+plot(fit1, which = 1)
+#QQ plot
+plot(fit1, which = 2)
+par(mfrow = c(1,1)) # reset to default window
+```
+
+As the plots in figure 6 suggest, the residuals exhibit systematic sign changes across the fitted range and greater dispersion at the upper end of the fitted values, suggesting heteroskedasticity, though variance differences at the extremes are probably partly driven by asymmetry induced by the bounded outcome.
+
+The Q-Q plot shows strong deviance from the norm at the ends, also suggesting a floor-ceiling effect due to the outcome bounds.
+
+To check on possible effects of heteroskedasticity on our model,we executed a Heteroskedasticity-robust (HC3) standard errors calculation. As table 6 shows, the coefficients' significance levels did not change from the original model, indicating that the predictors are robust to heteroskedasticity. 
+
+
+```{r echo=FALSE}
+# recalculate std errors as check on heteroskedasticity
+ct<-coeftest(fit1, vcov. = vcovHC(fit1, type = "HC3"))
+# useful for diagnosis, not for presentation.
+# modelsummary(fit1,vcov = vcovHC(fit1, type = "HC3"), statistic = "({std.error})",
+#  stars = TRUE, notes = "Heteroskedasticity-robust (HC3) standard errors in parentheses.")
+# render a table of the HC3 calculations
+kable(ct[,1:4], caption="Summary of coefficients for heteroskedasticity-robust (HC3) standard errors calculations for model 1.")
+```
+
+Finally, we executed a Breusch-Pagan test as another check for heteroskedasticity.
+
+```{r echo=FALSE}
+bpt<-bptest(fit1)
+
+colnames <- c("BP statistic", "df","p-value")
+bps<-round(as.numeric(bpt$statistic),4)
+degf<-as.numeric(bpt$parameter)
+pv<-round(as.numeric(bpt$p.value),4)
+
+tbl<-tibble(bps,degf,pv)
+knitr::kable(tbl, col.names=colnames, caption="Breusch-Pagan test results.")
+```
+
+The BP test resulted in a non-significant p-value, so we fail to reject the null hypothesis and conclude that we do not have sufficient evidence to say that heteroscedasticity is present in the regression model.
+
+Given the fit analysis above, we conclude that the model provides a reasonably valid basis for inference about the predictors' effect on the outcome.
+
+## Model 2: Academic Predictors
+
+We fit a second linear regression model using only the three academic predictors: study_hrs, prior_score, practice, with performance_index as the predicted variable. The fit results are displayed in table 8 below:
+
+```{r echo=FALSE}
+fit2 <- lm (performance_index ~ study_hrs+prior_score+practice, data=data.df)
+# useful for diagnosis, not for presentation.
+# summary(fit2)
+
+coef.vals <- coef(summary(fit2))
+kable(coef.vals, caption="Summary of coefficients for model 2.")
+```
+
+```{r echo=FALSE, results ='asis'}
+adjrsq <- summary(fit2)$adj.r.squared[1]
+formatted.str <- sprintf("The adjusted R^2^ for this model was %.4f, which is essentially the same as the value for the first model.", adjrsq)
+cat(formatted.str)
+```
+
+The three academic predictors were all highly significant in the model. The coefficient for study hours showed that it had the greatest effect on performance: the performance index increases 2.75 points on average for each additional hour of study, holding prior score and practice hours constant. The coefficient for prior score had a positive effect on performance of slightly less than 1 point, less than the effect of study hours, contradicting our hypothesis. The effect of practice hours was the lowest of the three but still having a positive effect on performance. This result closely aligns with the predictor performance from model 1. Our hypothesis 2 is again not supported as study hours has a greater impact on performance than prior score.
+
+### Evaluation of Model 2 Residuals 
+
+The scatter plot of the residuals vs fitted values and a QQ plot in figure 7 show the fit errors are reasonably normally distributed around zero with the same pattern that was observed for model 1. Because of this similarity, we did not conduct the same tests for heteroskedasticity as we conclude the main reason for the variance is likely due to the bounded nature of the outcome variable, and that the model serves as a valid source for inference.
+
+```{r echo=FALSE, out.width="80%", out.height="35%", fig.align = 'center', fig.cap="Plot of of residuals vs. fitted values and Q-Q plot for model 2."}
+
+par(mfrow = c(1,2))
+# residuals vs fitted
+plot(fit2, which = 1)
+#QQ plot
+plot(fit2, which = 2)
+par(mfrow = c(1,1)) # reset to default window
+```
+
+The set of significant coefficients was the same as with model 1, with similar sign and magnitudes. The additional variable of economic status in the model supports hypothesis 3 as cases with developing status have a significant decrease of approximately 7.5 years in comparison to developed countries.
+
+# Predicting with Models 1 and 2
+
+We evaluated the ability of the first and second models to predict academic performance on test data. We used 10-fold cross validation using 80% of the data for training and 20% for testing on each fold. The data for each fold was selected at random without replacement. Additionally, we repeated the 10-fold cross validation 3 times for a total of 30 folds overall. We did this to improve our data for comparing the predictive performance of the two models.
+
+```{r echo=FALSE}
+# use the caret library trainControl function to use cross-validation and  
+# set the number of folds to 10, repeating the 10 fold cv 3 times = 30 folds. 
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats= 3, p = 0.80) 
+
+# init random number generator for repeatability
+RNGversion(r.version)
+set.seed(seed.val)
+# train models using the settings in the train.control object.
+fit1.train <- train(performance_index ~ ., data = data.df, method = "lm", trControl = train.control)
+
+fit2.train <- train(performance_index ~ study_hrs+prior_score+practice, data = data.df, method = "lm", trControl = train.control)
+```
+
+To summarize the performance quantitatively, we calculated the average root mean squared error (RMSE) as well as the standard deviation for both models' predictions over the 30 folds. The results are shown in table 9.
+
+```{r echo=FALSE}
+label <- c("Model 1", "Model 2")
+cols<-c("Model", "Avg RMSE","Std Dev")
+# get the RMSE vectors
+rmse.one <- fit1.train$resample$RMSE
+rmse.two <- fit2.train$resample$RMSE
+
+avg.rmse1<-round(mean(rmse.one),2)
+avg.rmse2<-round(mean(rmse.two),2)
+
+sd.rmse1<-round(sd(rmse.one),4)
+sd.rmse2<-round(sd(rmse.two),4)
+
+rmse.vals <- c(avg.rmse1, avg.rmse2)
+sd.vals <- c(sd.rmse1, sd.rmse2)
+
+imb.tbl <- cbind(label, rmse.vals, sd.vals)
+kable(imb.tbl, col.names=cols, caption="Mean RMSE and standard deviation for models 1 and 2.")
+```
+
+We extracted and plotted the RMSE values over the 3x10=30 folds from each model.
+
+```{r echo=FALSE, out.width="75%", out.height="40%", fig.align = 'center', fig.cap="RMSE over 3x10=30 folds for models 1 and 2."}
+num.folds <- 30
+plot(rmse.one, 
+     xlab = "fold",
+     xaxp = c(1, num.folds, num.folds-1),
+     ylab = "rmse",
+     ylim=c(min(rmse.one,rmse.two), max(rmse.one,rmse.two)),
+     col = "blue")
+lines(rmse.one, col = "blue")
+points(rmse.two, col="red")
+lines(rmse.two, col = "red",lty = 2)
+
+legend("bottomleft", legend=c("model 1", "model 2"),
+       col=c("blue", "red"), lty=1:2, cex=0.5)
+```
+
+Visually, the plot in figure 8 shows a seemingly equivalent performance. We did observe a pattern where the models exhibit opposite error behavior, such as at folds 1, 8, 16, 19, and 22.
+
+Both models performed similarly on predicting out of sample data using cross validation as measured by RMSE and standard deviation of the RMSE values.
+
+# Summary and Conclusions
+
+The main research question of this analysis is how do academic and non-academic factors contribute to a student's academic performance. We obtained a data set that included observations about academic activities such as study time and the amount of practice material seen and a measure of prior academic scores, and non-academic activities such as extracurricular participation and sleep time. An academic performance index was the dependent variable in our analysis.  
+
+We hypothesized that academic predictors would have a greater effect on academic performance than non-academic predictors, and that prior scores will have the greatest effect on academic performance.
+
+To test these hypotheses,we fitted two linear regression models to the data. Both model 1 and model 2 fit the data well. Evaluation of the fit errors showed some non-constant variance and some non-normal aspects at the tails. We tested for heteroskedasticity and found there was no concerning effect that would undermine using our models for inference. We attributed the tail non-normality to be an effect of the fact that the dependent variable's distribution was bounded.
+
+In both models, study hours had the most effect on academic performance, with the prior scores second. The third academic predictor, amount of practice material seen, was the least important of all predictors. Therefore, our hypothesis 1 was not fully supported by model 1. If study time was an important predictor, then one would assume practice would also be important. There could be issues with the practice work data, namely, it was likely self reported, and there is no way to measure the quality of student interaction with the material. Also, the quality of the material is unknown. 
+
+Our second hypothesis was not supported by either model. In both models, prior scores were second in importance to study hours. While prior score did have lower standard error than study hours, we used the magnitude of the coefficient to gauge importance between significant predictors. Both models performed similarly on predicting out of sample data using cross validation.
+
+We had some questions about how study hours and number of question pages a student "practiced". It is difficult to measure the quality of study time or practice. Another question is if different types of extracurricular activities could make a difference to the effect on performance. Do physical activities has a more salutary effect? How do social activities such as clubs, or academic-based activities affect performance? Another concern was that students with high prior scores could likely be the same students who spend more time studying. We would be interested in investigating the effect of study time on students with a lower prior score. 
+
+With these caveats in mind, we conclude that study time and a past history of academic achievement are the most important predictors of academic performance in our data set. Extracurricular involvement as well as increased sleep time did positively affect performance to a lesser degree.
+
+# References
+
+[1] https://www.kaggle.com/datasets/nikhil7280/student-performance-multiple-linear-regression
+
+
