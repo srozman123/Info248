@@ -1,27 +1,174 @@
 ---
-author: "Your Names (both first and last names)"
-title: "Your descriptive title"
-date: "yyyy-mm-dd"
+author: "Simon Rozman and Nitish Rayavarapu"
+title: "Patient Characteristics and Individual Medical Costs Billed by Health Insurance"
+date: "2026-10-23"
 output:
   pdf_document:
     number_sections: true
 ---
 ```{r echo=FALSE, include=FALSE, message=FALSE}
 # all library load statements here
+library(knitr)
+library(ggplot2)
 
 r.version <- "4.3.2"
 seed.val <- 123456
+
+# Descriptive statistics table for a numeric variable, rounded to the hundredth
+desc.tbl <- function(x) {
+  q <- as.numeric(quantile(x))
+  statistic <- c("Min", "1st Quant. (25%)", "Mean", "Median",
+                 "3rd Quant. (75%)", "Max", "StdDev")
+  value <- sprintf("%.2f", c(min(x), q[2], mean(x), median(x), q[4], max(x), sd(x)))
+  data.frame(statistic, value)
+}
+
+# Counts and percentages for a c ategorical variable
+count.tbl <- function(x) {
+  tb <- table(x)
+  data.frame(Level = names(tb), Count = as.integer(tb),
+             Percent = sprintf("%.2f", 100 * as.numeric(tb) / sum(tb)))
+}
 ```
 
 Notes: This is an Rmd file template for the project. You may edit the headings below as fits your analysis. You may add headings and sub-headings as well. Please read the requirements for project 1 milestone 1 and for the final submission.
 
 For the Overview: A brief intro to the domain to give context and your main question go in this space. You don't need a heading for the overview (unless you want one).
 
+Health insurers set premium and plan designs based on how much they expect to pay for each person they cover, so understanding which characteristics are associated with higher or lower medical costs is extremely important when determining insurance and health pricing. Characteristics such as age, sex, body mass index, smoking status, number of children and place of residence may all be related to how much a person pays for their health insurance. 
+
+The main research question of this analysis is: how do a persons age, sex, body mass index, number of dependents, smoking status, and region of residence relate to the individual medical costs billed by their health insurance? 
+
 # Data Description and Processing
 
+The data set used in this analysis was collected from health insurance companies about billed medical costs and the attributes of the primary beneficiary. We categorized the variables as personal variables and health-realted variables: \
+
+Personal and Household Variables: \
+age: Age of the primary beneficiary in years. numeric \
+sex: Sex of the primary beneficiary categorical: female or male \
+children: Number of children (dependents) covered by the health insurance. numeric \
+region: The beneficiary's residential area in the US. categorical: northeast, southeast, southwest, or northwest \
+\par
+Health-Related Variables: \
+bmi: Body mass index of the beneficiary numeric \
+smoker: whether the beneficiary smokes. categorical: yes or no \
+\par
+Outcome: \
+charges: Individual medical costs billed by the health insurance in US dollars. numeric \
+
+The data set was checked for missing values. Of the original 1338 observations, we removed 5 obersvations that contained missing values leaving 1333 complete observations.
+
+
+```{r}
+data.df <- read.csv("dataset5/dataset5.csv")
+data.df <- na.omit(data.df)
+data.df$sex <- factor(data.df$sex)
+data.df$smoker <- factor(data.df$smoker)
+data.df$region <- factor(data.df$region)
+```
 
 # Data Exploration
 
+The distribution of the outcome variable, medical charges, is shown in the figure below. It is strongly right-skewed: most beneficiaries have lower charges, with a long tail of much larger bills. There is also a second, smaller bump at roughly \$30,000 to \$40,000
+
+```{r echo=FALSE, out.width="70%", out.height="35%", fig.align = 'center', fig.cap="Distribution of individual medical charges."}
+hist(data.df$charges, freq = FALSE, breaks = 30, # freq = FALSE for density scale on y-axis
+     main = "", # turn off the title as using the fig.cap
+     xlab = "Medical charges (US dollars)",
+     ylab = "Density")
+lines(density(data.df$charges), col = "blue", lwd = 2)
+```
+
+The descriptive statistics are in the table below. The mean of
+\$13282.32 is well above the median of
+\$9386.16, which reflects the long right tail. Charges range
+from \$1121.87 to
+\$63770.43.
+
+```{r echo=FALSE}
+kable(desc.tbl(data.df$charges), align = c("l", "r"),
+      caption = "Medical charges descriptive statistics (US dollars)")
+```
+A skewed outcome is not automatically a problem for linear regression with a sample of this size. However, charges cannot fall below zero and the very large values can strongly influence a fitted model. Given these observations, we checked the residuals for problems in our fitted models. 
+
+## Personal and Household Variables
+
+We explored the distributions of the four personal and household variables
+
+```{r echo=FALSE, out.width="65%", out.height="30%", fig.align='center', fig.cap="Distribution of age."}
+hist(data.df$age, freq = FALSE,
+     main = "",
+     xlab = "Age (years)",
+     ylab = "Density")
+lines(density(data.df$age), col = "blue", lwd = 2)
+```
+
+```{r echo=FALSE}
+kable(desc.tbl(data.df$age), align = c("l", "r"),
+      caption = "Age descriptive statistics (years)")
+```
+
+Ages range from 18 to 64 and are spread fairly evenly across the range, with a mean and median close to 39. The mean and median are nearly the same, so the distribution is roughly symmetric.
+
+We checked the frequencies of the two categorical variables, sex and region.
+
+```{r echo=FALSE}
+kable(count.tbl(data.df$sex), col.names = c("Sex", "Count", "Percent (%)"),
+      align = c("l", "r", "r"), caption = "Beneficiaries by sex")
+```
+
+```{r echo=FALSE}
+kable(count.tbl(data.df$region), col.names = c("Region", "Count", "Percent (%)"),
+      align = c("l", "r", "r"), caption = "Beneficiaries by region")
+```
+
+
+There are essentially equal numbers of males and females, and the four regions are well balanced, with the southeast slightly larger than the others. This means we have a good representation of each level.
+
+The number of children is recorded as whole numbers, so we plotted the number of beneficiaries
+at each value.
+
+```{r echo=FALSE, out.width="65%", out.height="25%", fig.align='center', fig.cap="Distribution of the number of children."}
+ch.tbl <- table(data.df$children)
+ch.df <- data.frame(children = factor(names(ch.tbl)),
+                    counts = as.numeric(ch.tbl))
+ggplot(ch.df, aes(x = children, y = counts)) +
+  geom_col(fill = "darkgrey") +
+  geom_text(aes(label = counts), vjust = -0.5, size = 3)
+```
+
+The figure about shows that the most common number of children is 0, and the counts fall steadily as the number of children increases. Having four or five children is rarer. 
+
+\newpage
+## Health-Related Variables
+
+We explored the two health-related variables. Body mass index is shown in the figure below.
+
+```{r echo=FALSE, out.width="65%", out.height="30%", fig.align='center', fig.cap="Distribution of body mass index."}
+d <- density(data.df$bmi)
+hist(data.df$bmi, freq = FALSE,
+     ylim = c(0, max(d$y) * 1.05),
+     main = "",
+     xlab = "Body mass index",
+     ylab = "Density")
+lines(density(data.df$bmi), col = "blue", lwd = 2)
+```
+```{r echo=FALSE}
+kable(desc.tbl(data.df$bmi), align = c("l", "r"),
+      caption = "Body mass index descriptive statistics")
+```
+
+Body mass index has a roughly bell-shaped distribution with a slight tail toward higher values. Most beneficiaries fall between about 25 and 35, and the mean and median are both close to 30.
+
+
+Smoking status is the second health-related variable.
+
+```{r echo=FALSE}
+kable(count.tbl(data.df$smoker), col.names = c("Smoker", "Count", "Percent (%)"),
+      align = c("l", "r", "r"), caption = "Beneficiaries by smoking status")
+```
+
+Table 6 shows smokers are a much smaller group than non-smokers, at about 20.48% of beneficiaries, so estimates for smokers rest on fewer observations.
 
 # Modeling 
 
