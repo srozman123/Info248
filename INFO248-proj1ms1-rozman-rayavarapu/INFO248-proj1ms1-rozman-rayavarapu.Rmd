@@ -1,0 +1,293 @@
+---
+author: "Simon Rozman and Nitish Rayavarapu"
+title: "Patient Characteristics and Individual Medical Costs Billed by Health Insurance"
+date: "2026-10-24"
+output:
+  pdf_document:
+    number_sections: true
+---
+```{r echo=FALSE, include=FALSE, message=FALSE}
+# all library load statements here
+library(knitr)
+library(ggplot2)
+library(car) # for VIF
+library(lmtest) # for Breusch-Pagan test
+library(sandwich) # for robust (HC3) standard errors
+library(caret) # for training and cross validation
+
+r.version <- "4.3.2"
+seed.val <- 123456
+
+# Descriptive statistics table for a numeric variable, rounded to the hundredth
+desc.tbl <- function(x) {
+  q <- as.numeric(quantile(x))
+  statistic <- c("Min", "1st Quant. (25%)", "Mean", "Median",
+                 "3rd Quant. (75%)", "Max", "StdDev")
+  value <- sprintf("%.2f", c(min(x), q[2], mean(x), median(x), q[4], max(x), sd(x)))
+  data.frame(statistic, value)
+}
+
+# Counts and percentages for a c ategorical variable
+count.tbl <- function(x) {
+  tb <- table(x)
+  data.frame(Level = names(tb), Count = as.integer(tb),
+             Percent = sprintf("%.2f", 100 * as.numeric(tb) / sum(tb)))
+}
+```
+
+Health insurers set premium and plan designs based on how much they expect to pay for each person they cover, so understanding which characteristics are associated with higher or lower medical costs is extremely important when determining insurance and health pricing. Characteristics such as age, sex, body mass index, smoking status, number of children and place of residence may all be related to how much a person pays for their health insurance. 
+
+The main research question of this analysis is: how do a person's age, sex, body mass index, number of dependents, smoking status, and region of residence relate to the individual medical costs billed by their health insurance? 
+
+# Data Description and Processing
+
+The data set used in this analysis was collected from health insurance companies about billed medical costs and the attributes of the primary beneficiary. We categorized the variables as personal variables and health-related variables: \
+
+Personal and Household Variables: \
+age: Age of the primary beneficiary in years. numeric \
+sex: Sex of the primary beneficiary categorical: female or male \
+children: Number of children (dependents) covered by the health insurance. numeric \
+region: The beneficiary's residential area in the US. categorical: northeast, southeast, southwest, or northwest \
+\par
+Health-Related Variables: \
+bmi: Body mass index of the beneficiary numeric \
+smoker: whether the beneficiary smokes. categorical: yes or no \
+\par
+Outcome: \
+charges: Individual medical costs billed by the health insurance in US dollars. numeric \
+
+The data set was checked for missing values. Of the original 1338 observations, we removed 5 observations that contained missing values leaving 1333 complete observations. We did not remove any outliers.
+
+
+```{r echo=FALSE}
+data.df <- read.csv("dataset5.csv")
+data.df <- na.omit(data.df)
+data.df$sex <- factor(data.df$sex)
+data.df$smoker <- factor(data.df$smoker)
+data.df$region <- factor(data.df$region)
+```
+
+# Data Exploration
+
+The distribution of the outcome variable, medical charges, is shown in the figure below. It is strongly right-skewed: most beneficiaries have lower charges, with a long tail of much larger bills. There is also a second, smaller bump at roughly \$30,000 to \$40,000.
+
+```{r echo=FALSE, out.width="70%", out.height="35%", fig.align = 'center', fig.cap="Distribution of individual medical charges."}
+hist(data.df$charges, freq = FALSE, breaks = 30, # freq = FALSE for density scale on y-axis
+     main = "", # turn off the title as using the fig.cap
+     xlab = "Medical charges (US dollars)",
+     ylab = "Density")
+lines(density(data.df$charges), col = "blue", lwd = 2)
+```
+
+The descriptive statistics are in the table below. The mean of
+\$13282.32 is well above the median of
+\$9386.16, which reflects the long right tail. Charges range
+from \$1121.87 to
+\$63770.43.
+
+```{r echo=FALSE}
+kable(desc.tbl(data.df$charges), align = c("l", "r"),
+      caption = "Medical charges descriptive statistics (US dollars)")
+```
+A skewed outcome is not automatically a problem for linear regression with a sample of this size. However, charges cannot fall below zero and the very large values can strongly influence a fitted model. Given these observations, we checked the residuals for problems in our fitted models. 
+
+\newpage
+## Personal and Household Variables
+
+We explored the distributions of the four personal and household variables.
+
+```{r echo=FALSE, out.width="65%", out.height="30%", fig.align='center', fig.cap="Distribution of age."}
+hist(data.df$age, freq = FALSE,
+     main = "",
+     xlab = "Age (years)",
+     ylab = "Density")
+lines(density(data.df$age), col = "blue", lwd = 2)
+```
+
+```{r echo=FALSE}
+kable(desc.tbl(data.df$age), align = c("l", "r"),
+      caption = "Age descriptive statistics (years)")
+```
+
+Ages range from 18 to 64 and are spread fairly evenly across the range, with a mean and median close to 39. The mean and median are nearly the same, so the distribution is roughly symmetric.
+
+We checked the frequencies of the two categorical variables, sex and region.
+
+```{r echo=FALSE}
+kable(count.tbl(data.df$sex), col.names = c("Sex", "Count", "Percent (%)"),
+      align = c("l", "r", "r"), caption = "Beneficiaries by sex")
+```
+
+```{r echo=FALSE}
+kable(count.tbl(data.df$region), col.names = c("Region", "Count", "Percent (%)"),
+      align = c("l", "r", "r"), caption = "Beneficiaries by region")
+```
+
+
+There are essentially equal numbers of males and females, and the four regions are well balanced, with the southeast slightly larger than the others. This means we have a good representation of each level.
+
+The number of children is recorded as whole numbers, so we plotted the number of beneficiaries
+at each value.
+
+```{r echo=FALSE, out.width="65%", out.height="25%", fig.align='center', fig.cap="Distribution of the number of children."}
+ch.tbl <- table(data.df$children)
+ch.df <- data.frame(children = factor(names(ch.tbl)),
+                    counts = as.numeric(ch.tbl))
+ggplot(ch.df, aes(x = children, y = counts)) +
+  geom_col(fill = "darkgrey") +
+  geom_text(aes(label = counts), vjust = -0.5, size = 3)
+```
+
+The figure above shows that the most common number of children is 0, and the counts fall steadily as the number of children increases. Having four or five children is rarer. 
+
+\newpage
+## Health-Related Variables
+
+We explored the two health-related variables. Body mass index is shown in the figure below.
+
+```{r echo=FALSE, out.width="65%", out.height="30%", fig.align='center', fig.cap="Distribution of body mass index."}
+d <- density(data.df$bmi)
+hist(data.df$bmi, freq = FALSE,
+     ylim = c(0, max(d$y) * 1.05),
+     main = "",
+     xlab = "Body mass index",
+     ylab = "Density")
+lines(density(data.df$bmi), col = "blue", lwd = 2)
+```
+```{r echo=FALSE}
+kable(desc.tbl(data.df$bmi), align = c("l", "r"),
+      caption = "Body mass index descriptive statistics")
+```
+
+Body mass index has a roughly bell-shaped distribution with a slight tail toward higher values. Most beneficiaries fall between about 25 and 35, and the mean and median are both close to 30.
+
+
+Smoking status is the second health-related variable.
+
+```{r echo=FALSE}
+kable(count.tbl(data.df$smoker), col.names = c("Smoker", "Count", "Percent (%)"),
+      align = c("l", "r", "r"), caption = "Beneficiaries by smoking status")
+```
+
+Table 6 shows smokers are a much smaller group than non-smokers, at about 20.48% of beneficiaries, so estimates for smokers rest on fewer observations.
+
+\newpage
+# Modeling
+
+To answer our research question, we fitted a multiple linear regression model to see how a person's characteristics relate to the medical costs billed by their health insurance.
+
+## Model 1: All Predictors
+
+The first model uses all six predictors: age, sex, bmi, children, smoker and region. The dependent variable is charges and the other six variables are the independent variables. For the categorical predictors, female is the reference level for sex, no is the reference level for smoker, and northeast is the reference level for region. The estimates for the coefficients, standard errors and p-values are shown in table 7.
+
+```{r echo=FALSE}
+fit1 <- lm(charges ~ ., data = data.df)
+# summary object useful for values from fit.
+fit1.summary <- summary(fit1)
+coef.vals <- coef(fit1.summary)
+kable(round(coef.vals, 4), caption = "Summary of coefficients for model 1.")
+```
+
+The adjusted R-squared for this model was 0.7498, so the model explains about 75% of the variance in medical charges. The F-statistic was 499.97 on 8 and 1324 degrees of freedom with a p-value less than 0.0001, which means the model is statistically significant overall.
+
+Age, bmi, children and smoker are all highly significant with p-values < 0.001. Two of the three region levels, southeast and southwest, are also significant (p < 0.05), but northwest is not. Sex is the only predictor that is not significant (p = 0.72), so there is no real difference in charges between males and females once the other predictors are held constant. Table 8 ranks the significant predictors by the size of their coefficients.
+
+```{r echo=FALSE}
+# create table of predictor importance for model 1
+names <- c("Rank", "Predictor", "Category", "Coefficient")
+rank.num <- c(seq(1:6))
+pred.names <- c("smokeryes", "regionsoutheast", "regionsouthwest", "children", "bmi", "age")
+cats <- c("health-related", "personal and household", "personal and household",
+          "personal and household", "health-related", "personal and household")
+coeffs <- round(as.numeric(coef.vals[pred.names, 1]), 4)
+pred.imp.tbl <- data.frame(rank.num, pred.names, cats, coeffs)
+kable(pred.imp.tbl, col.names = names, caption = "Ranking of predictors' importance in model 1.")
+```
+
+Smoking has by far the biggest effect on medical charges. On average, smokers are billed about \$23,885.10 more than non-smokers, holding the other predictors constant. That is more than 20 times bigger than any other coefficient in the model. The two significant region levels come next: people in the southeast and southwest are billed about \$996.88 and \$951.83 less than people in the northeast, but these are also the least significant predictors in the table (p = 0.0382 and p = 0.0471). Each extra child on the plan adds about \$479.19 in charges, each 1 unit increase in body mass index adds about \$336.54, and each extra year of age adds about \$257.02.
+
+### Evaluation of Model 1 Fit
+
+We calculated the variance inflation factor (VIF) for each predictor to check for multicollinearity. Since region is categorical with more than two levels, the table shows the generalized VIF (GVIF), along with the adjusted GVIF that is used to compare categorical predictors.
+
+```{r echo=FALSE}
+vif.res <- vif(fit1)
+kable(round(vif.res, 4), caption = "VIF calculations for model 1.")
+```
+
+All of the values in table 9 are close to 1, so there is no multicollinearity in the model and we did not need to remove any predictors.
+
+The residuals vs. fitted values plot and the Q-Q plot for model 1 are shown in figure 5.
+
+```{r echo=FALSE, out.width="80%", out.height="35%", fig.align='center', fig.cap="Plot of residuals vs. fitted values and Q-Q plot for model 1."}
+par(mfrow = c(1,2))
+# residuals vs fitted
+plot(fit1, which = 1)
+# QQ plot
+plot(fit1, which = 2)
+par(mfrow = c(1,1)) # reset to default window
+```
+
+The residuals are not randomly scattered around 0. For lower fitted values, most of the points are bunched up just under the zero line, with a lot of points far above it. For higher fitted values, the residuals split into two separate groups, one above the zero line and one below it. Patterns like this suggest the model is missing something, such as nonlinear terms or interactions between the predictors. The Q-Q plot shows the residuals are not normally distributed, with the points moving far away from the line at both ends, especially at the top. This matches the right-skewed distribution of charges in figure 1.
+
+We also ran a Breusch-Pagan test to check for non-constant variance (heteroscedasticity).
+
+```{r echo=FALSE}
+bpt <- bptest(fit1)
+colnames <- c("BP statistic", "df", "p-value")
+bps <- round(as.numeric(bpt$statistic), 4)
+degf <- as.numeric(bpt$parameter)
+pv <- round(as.numeric(bpt$p.value), 4)
+tbl <- data.frame(bps, degf, pv)
+kable(tbl, col.names = colnames, caption = "Breusch-Pagan test results.")
+```
+
+The p-value in table 10 rounds to 0 (it is less than 0.0001), so we reject the null hypothesis and conclude that heteroscedasticity is present. Since this can make the standard errors and p-values unreliable, we recalculated them using robust (HC3) standard errors. The results are in table 11.
+
+```{r echo=FALSE}
+# recalculate std errors as check on heteroskedasticity
+ct <- coeftest(fit1, vcov. = vcovHC(fit1, type = "HC3"))
+kable(round(ct[, 1:4], 4), caption = "Summary of coefficients for heteroskedasticity-robust (HC3) standard errors calculations for model 1.")
+```
+
+The coefficients stay the same, but some of the standard errors changed, especially for smoker (from 414.07 to 579.39). Even so, the same predictors are still significant at the 0.05 level as in table 7, so the heteroscedasticity does not change which predictors are related to medical charges.
+
+To sum up the fit, model 1 explains a good amount of the variance in charges and smoking stands out as the most important predictor. There is no multicollinearity, and the robust standard errors show the significant predictors hold up even with the non-constant variance. Our biggest concern is the pattern in the residuals, which shows that this model doesn't fully capture how charges work, especially for people with high charges. We will keep this in mind when we choose the predictors for our second model.
+
+# Predicting with Model 1
+
+To see how well model 1 predicts charges for data it hasn't seen, we used 10-fold cross validation. On each fold, 80% of the data was used to train the model and the other 20% was used to test it, with the data for each fold picked at random. We repeated the 10-fold cross validation 3 times, for a total of 30 folds, to get a better measure of how the model performs. We then calculated the average root mean squared error (RMSE) over the 30 folds and the standard deviation of the RMSE values, shown in table 12.
+
+```{r echo=FALSE}
+# use the caret library trainControl function to use cross-validation and
+# set the number of folds to 10, repeating the 10 fold cv 3 times = 30 folds.
+train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3, p = 0.80)
+# init random number generator for repeatability
+RNGversion(r.version)
+set.seed(seed.val)
+# train model 1 using the settings in the train.control object.
+fit1.train <- train(charges ~ ., data = data.df, method = "lm", trControl = train.control)
+label <- c("Model 1")
+cols <- c("Model", "Avg RMSE", "Std Dev")
+# get the RMSE vector
+rmse.one <- fit1.train$resample$RMSE
+avg.rmse1 <- round(mean(rmse.one), 2)
+sd.rmse1 <- round(sd(rmse.one), 4)
+cv.tbl <- cbind(label, avg.rmse1, sd.rmse1)
+kable(cv.tbl, col.names = cols, caption = "Mean RMSE and standard deviation for model 1.")
+```
+
+On average, the model's predictions were off by about \$6,080.86. That is about 46% of the mean charge of \$13,282.32, which is a pretty large error. This makes sense given the problems we saw in the residuals. We plotted the RMSE for each of the 3x10=30 folds in figure 6.
+
+```{r echo=FALSE, out.width="70%", out.height="35%", fig.align='center', fig.cap="RMSE over 3x10=30 folds for model 1."}
+num.folds <- 30
+plot(rmse.one,
+     xlab = "fold",
+     xaxp = c(1, num.folds, num.folds-1),
+     ylab = "rmse",
+     ylim = c(min(rmse.one), max(rmse.one)),
+     col = "blue")
+lines(rmse.one, col = "blue")
+```
+
+Figure 6 shows the RMSE stayed in a fairly small range over all 30 folds, from about \$5,401 to about \$6,807. The standard deviation is small compared to the average RMSE, so the model's error was about the same no matter which part of the data it was trained and tested on. So model 1 is consistent in its predictions, but they are not very precise.
